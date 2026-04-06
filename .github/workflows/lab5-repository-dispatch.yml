@@ -1,0 +1,135 @@
+# =============================================================================
+#  LAB 5 (PART 2): REPOSITORY DISPATCH - External Triggers
+# =============================================================================
+#
+#  This workflow demonstrates repository_dispatch -- triggering workflows
+#  from EXTERNAL systems (CI servers, Slack bots, monitoring tools, etc.)
+#
+#  KEY CONCEPTS:
+#    - repository_dispatch uses a POST request to the GitHub API
+#    - Requires a Personal Access Token (PAT) with 'repo' scope
+#    - You define event types (like custom event names)
+#    - You can send arbitrary JSON data in client_payload
+#
+#  HOW TO TRIGGER:
+#    curl -X POST \
+#      -H "Accept: application/vnd.github.v3+json" \
+#      -H "Authorization: token YOUR_PAT" \
+#      https://api.github.com/repos/OWNER/REPO/dispatches \
+#      -d '{"event_type":"deploy-command","client_payload":{"env":"staging","version":"2.1.0"}}'
+#
+#  Or with GitHub CLI:
+#    gh api repos/OWNER/REPO/dispatches \
+#      -f event_type=deploy-command \
+#      -f client_payload='{"env":"staging","version":"2.1.0"}'
+#
+# =============================================================================
+
+name: "Lab 5 - Repository Dispatch (External Triggers)"
+
+# ---------------------------------------------------------------------------
+# TRIGGER: Only runs when an external system sends a dispatch event
+# ---------------------------------------------------------------------------
+on:
+  repository_dispatch:
+    types:
+      - deploy-command
+      - run-tests
+      - notify-team
+
+# ---------------------------------------------------------------------------
+# JOBS
+# ---------------------------------------------------------------------------
+jobs:
+
+  # =========================================================================
+  # JOB 1: Handle the dispatch event
+  # =========================================================================
+  handle-dispatch:
+    name: "Handle External Dispatch"
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Show all dispatch information
+      - name: "Show dispatch info"
+        run: |
+          echo "============================================="
+          echo "  REPOSITORY DISPATCH RECEIVED"
+          echo "============================================="
+          echo ""
+          echo "  Event type:   ${{ github.event.action }}"
+          echo "  Sender:       ${{ github.actor }}"
+          echo "  Repository:   ${{ github.repository }}"
+          echo "  Timestamp:    $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo ""
+          echo "  Client Payload (raw JSON):"
+          echo '  ${{ toJSON(github.event.client_payload) }}'
+          echo ""
+          echo "============================================="
+
+      # Step 2: Handle 'deploy-command' event type
+      #
+      # CONDITIONAL: This step only runs for deploy-command events.
+      # The payload is expected to contain: env, version
+      #
+      - name: "Handle: deploy-command"
+        if: github.event.action == 'deploy-command'
+        run: |
+          echo "Handling DEPLOY COMMAND"
+          echo ""
+          echo "  Target env:    ${{ github.event.client_payload.env }}"
+          echo "  Version:       ${{ github.event.client_payload.version }}"
+          echo ""
+          echo "  In a real workflow, this would:"
+          echo "    1. Checkout the code at the specified version"
+          echo "    2. Build the Docker image"
+          echo "    3. Deploy to the specified environment"
+          echo "    4. Run smoke tests"
+          echo "    5. Report back to the external system"
+
+      # Step 3: Handle 'run-tests' event type
+      - name: "Handle: run-tests"
+        if: github.event.action == 'run-tests'
+        run: |
+          echo "Handling RUN TESTS"
+          echo ""
+          echo "  Test suite:  ${{ github.event.client_payload.suite }}"
+          echo "  Branch:      ${{ github.event.client_payload.branch }}"
+          echo ""
+          echo "  In a real workflow, this would:"
+          echo "    1. Checkout the specified branch"
+          echo "    2. Install dependencies"
+          echo "    3. Run the specified test suite"
+          echo "    4. Report results back (webhook, Slack, etc.)"
+
+      # Step 4: Handle 'notify-team' event type
+      - name: "Handle: notify-team"
+        if: github.event.action == 'notify-team'
+        run: |
+          echo "Handling NOTIFY TEAM"
+          echo ""
+          echo "  Channel:  ${{ github.event.client_payload.channel }}"
+          echo "  Message:  ${{ github.event.client_payload.message }}"
+          echo "  Urgency:  ${{ github.event.client_payload.urgency }}"
+          echo ""
+          echo "  In a real workflow, this would:"
+          echo "    1. Send a Slack message to the specified channel"
+          echo "    2. Send an email to the team"
+          echo "    3. Create a GitHub issue if urgency is high"
+
+      # Step 5: Handle unknown event types
+      - name: "Handle: unknown event type"
+        if: |
+          github.event.action != 'deploy-command' &&
+          github.event.action != 'run-tests' &&
+          github.event.action != 'notify-team'
+        run: |
+          echo "WARNING: Unknown event type '${{ github.event.action }}'"
+          echo ""
+          echo "This workflow handles these event types:"
+          echo "  - deploy-command"
+          echo "  - run-tests"
+          echo "  - notify-team"
+          echo ""
+          echo "The event was received but no handler matched."
+          echo "Payload: ${{ toJSON(github.event.client_payload) }}"

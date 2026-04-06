@@ -1,0 +1,322 @@
+# =============================================================================
+#  LAB 5: CONDITIONALS, EXPRESSIONS & CONTEXTS
+# =============================================================================
+#
+#  This workflow demonstrates the FULL power of GitHub Actions expressions:
+#    - if conditions at job and step level
+#    - Built-in functions: contains(), startsWith(), endsWith(), format()
+#    - Status check functions: success(), failure(), always(), cancelled()
+#    - Context objects: github, runner, env, steps, needs, inputs
+#    - toJSON() and fromJSON() for data serialization
+#
+#  KEY CONCEPT:
+#    Expressions use the ${{ }} syntax and return boolean, number, or string.
+#    The 'if' keyword evaluates expressions to decide whether to run.
+#
+#  EXPERIMENT:
+#    - Push to main:        ALL jobs run (including deploy)
+#    - Push to feature/*:   deploy job is SKIPPED
+#    - workflow_dispatch:    force-deploy input overrides branch check
+#
+# =============================================================================
+
+name: "Lab 5 - Conditionals & Expressions"
+
+# ---------------------------------------------------------------------------
+# TRIGGERS
+# ---------------------------------------------------------------------------
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+      - "fix/**"
+
+  workflow_dispatch:
+    inputs:
+      force-deploy:
+        description: "Force deployment even on non-main branch"
+        required: false
+        default: false
+        type: boolean
+
+# ---------------------------------------------------------------------------
+# JOBS
+# ---------------------------------------------------------------------------
+jobs:
+
+  # =========================================================================
+  # JOB 1: ANALYZE - Dump contexts and set outputs
+  # =========================================================================
+  #
+  #  This job examines the trigger context and sets outputs that
+  #  other jobs can use to make decisions.
+  #
+  analyze:
+    name: "Analyze Trigger Context"
+    runs-on: ubuntu-latest
+
+    # OUTPUTS: These values are available to downstream jobs via needs.analyze.outputs.*
+    outputs:
+      is-main: ${{ steps.check-branch.outputs.is-main }}
+      is-feature: ${{ steps.check-branch.outputs.is-feature }}
+      branch-type: ${{ steps.check-branch.outputs.branch-type }}
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+
+      # Dump the full github context to see ALL available data.
+      # This is invaluable for debugging workflow logic!
+      - name: "Dump github context (for learning)"
+        run: |
+          echo "============================================="
+          echo "  GITHUB CONTEXT (toJSON)"
+          echo "============================================="
+          echo ""
+          echo "  Event name:   ${{ github.event_name }}"
+          echo "  Ref:          ${{ github.ref }}"
+          echo "  Ref name:     ${{ github.ref_name }}"
+          echo "  SHA:          ${{ github.sha }}"
+          echo "  Actor:        ${{ github.actor }}"
+          echo "  Repository:   ${{ github.repository }}"
+          echo "  Run ID:       ${{ github.run_id }}"
+          echo "  Run number:   ${{ github.run_number }}"
+          echo ""
+          echo "  Full context (truncated for readability):"
+          echo '${{ toJSON(github) }}' | head -50
+
+      # Dump the runner context
+      - name: "Dump runner context"
+        run: |
+          echo "============================================="
+          echo "  RUNNER CONTEXT"
+          echo "============================================="
+          echo "  OS:           ${{ runner.os }}"
+          echo "  Arch:         ${{ runner.arch }}"
+          echo "  Name:         ${{ runner.name }}"
+          echo "  Temp dir:     ${{ runner.temp }}"
+          echo "  Tool cache:   ${{ runner.tool_cache }}"
+
+      # Check what type of branch triggered this workflow
+      # and set outputs for downstream jobs.
+      - name: "Check branch type"
+        id: check-branch
+        run: |
+          REF="${{ github.ref }}"
+          echo "Analyzing ref: $REF"
+
+          # Is this the main branch?
+          if [ "$REF" = "refs/heads/main" ]; then
+            echo "is-main=true" >> "$GITHUB_OUTPUT"
+            echo "is-feature=false" >> "$GITHUB_OUTPUT"
+            echo "branch-type=main" >> "$GITHUB_OUTPUT"
+            echo "Branch type: MAIN"
+
+          # Is this a feature branch?
+          elif [[ "$REF" == refs/heads/feature/* ]]; then
+            echo "is-main=false" >> "$GITHUB_OUTPUT"
+            echo "is-feature=true" >> "$GITHUB_OUTPUT"
+            echo "branch-type=feature" >> "$GITHUB_OUTPUT"
+            echo "Branch type: FEATURE"
+
+          # Is this a fix branch?
+          elif [[ "$REF" == refs/heads/fix/* ]]; then
+            echo "is-main=false" >> "$GITHUB_OUTPUT"
+            echo "is-feature=false" >> "$GITHUB_OUTPUT"
+            echo "branch-type=fix" >> "$GITHUB_OUTPUT"
+            echo "Branch type: FIX"
+
+          else
+            echo "is-main=false" >> "$GITHUB_OUTPUT"
+            echo "is-feature=false" >> "$GITHUB_OUTPUT"
+            echo "branch-type=other" >> "$GITHUB_OUTPUT"
+            echo "Branch type: OTHER"
+          fi
+
+  # =========================================================================
+  # JOB 2: FUNCTIONS DEMO - Built-in expression functions
+  # =========================================================================
+  functions-demo:
+    name: "Expression Functions Demo"
+    runs-on: ubuntu-latest
+    needs: analyze
+
+    steps:
+      # contains() - Check if a string contains a substring
+      - name: "Demo: contains()"
+        run: |
+          echo "=== contains() ==="
+          echo "contains('Hello World', 'World') = true"
+          echo "Used in workflows to check labels, branch names, commit messages"
+          echo ""
+          echo "Example: Check if commit message contains 'skip-ci'"
+          echo "  if: contains(github.event.head_commit.message, 'skip-ci') == false"
+
+      # Conditional step using contains()
+      - name: "Conditional: branch contains 'main'"
+        if: contains(github.ref, 'main')
+        run: echo "This step runs because the ref contains 'main'"
+
+      - name: "Conditional: branch does NOT contain 'main'"
+        if: "!contains(github.ref, 'main')"
+        run: echo "This step runs because the ref does NOT contain 'main'"
+
+      # startsWith() and endsWith()
+      - name: "Demo: startsWith() and endsWith()"
+        run: |
+          echo "=== startsWith() / endsWith() ==="
+          echo ""
+          echo "Ref: ${{ github.ref }}"
+          echo "startsWith(ref, 'refs/heads/') -> checks if it's a branch"
+          echo "endsWith(ref, '/main')         -> checks if it ends with main"
+
+      - name: "Conditional: ref starts with refs/heads/"
+        if: startsWith(github.ref, 'refs/heads/')
+        run: echo "This is a branch push (not a tag or PR)"
+
+      # format() - String formatting
+      - name: "Demo: format()"
+        run: |
+          echo "=== format() ==="
+          echo ""
+          echo "format() works like printf/f-strings:"
+          echo "  format('Deploy {0} to {1}', 'v1.0', 'prod')"
+          echo "  -> 'Deploy v1.0 to prod'"
+          echo ""
+          FORMATTED="${{ format('Workflow {0} run #{1} on {2}', github.workflow, github.run_number, github.ref_name) }}"
+          echo "Result: $FORMATTED"
+
+      # toJSON() and fromJSON()
+      - name: "Demo: toJSON() and fromJSON()"
+        run: |
+          echo "=== toJSON() / fromJSON() ==="
+          echo ""
+          echo "toJSON() converts any context to a JSON string:"
+          echo "  toJSON(needs.analyze.outputs) serializes all outputs"
+          echo ""
+          echo "fromJSON() parses a JSON string back into an object:"
+          echo "  fromJSON(needs.analyze.outputs.is-main) can parse 'true' -> boolean"
+          echo ""
+          echo "Analyze job outputs:"
+          echo '${{ toJSON(needs.analyze.outputs) }}'
+
+  # =========================================================================
+  # JOB 3: STATUS CHECKS - success(), failure(), always(), cancelled()
+  # =========================================================================
+  #
+  #  This job demonstrates status check functions and continue-on-error.
+  #
+  #  KEY CONCEPT:
+  #    - success() : true if ALL previous steps succeeded (default behavior)
+  #    - failure() : true if ANY previous step failed
+  #    - always()  : ALWAYS runs, even if previous steps failed or cancelled
+  #    - cancelled(): true if the workflow was cancelled
+  #
+  #    continue-on-error: true  makes a step "soft fail" -- the step is
+  #    marked as failed but the job continues to the next step.
+  #
+  status-checks:
+    name: "Status Check Functions"
+    runs-on: ubuntu-latest
+    needs: analyze
+
+    steps:
+      - name: "Step 1: This step succeeds"
+        run: |
+          echo "Step 1: I succeed!"
+          echo "After this, success() = true, failure() = false"
+
+      # This step INTENTIONALLY FAILS, but continue-on-error prevents
+      # the whole job from failing. This is how you handle known flaky
+      # steps or optional checks.
+      - name: "Step 2: This step FAILS (but continues)"
+        id: failing-step
+        continue-on-error: true
+        run: |
+          echo "Step 2: I am about to fail on purpose!"
+          echo "But because continue-on-error: true, the job will continue."
+          exit 1
+
+      # This step demonstrates checking the outcome of a previous step
+      - name: "Step 3: Check outcome of failing step"
+        run: |
+          echo "The failing step's outcome was: ${{ steps.failing-step.outcome }}"
+          echo ""
+          echo "Possible outcome values:"
+          echo "  success   - step completed successfully"
+          echo "  failure   - step failed"
+          echo "  cancelled - step was cancelled"
+          echo "  skipped   - step was skipped"
+
+      # This step runs ONLY if a previous step failed
+      - name: "Step 4: Runs only if something failed"
+        if: failure()
+        run: |
+          echo "A previous step failed!"
+          echo "In a real workflow, this could:"
+          echo "  - Send an alert"
+          echo "  - Create a GitHub issue"
+          echo "  - Roll back a deployment"
+
+      # This step ALWAYS runs, no matter what
+      - name: "Step 5: ALWAYS runs (cleanup)"
+        if: always()
+        run: |
+          echo "This step runs no matter what happened above."
+          echo "Common uses for always():"
+          echo "  - Upload test results"
+          echo "  - Clean up temporary resources"
+          echo "  - Send final status notification"
+          echo ""
+          echo "Previous step outcomes:"
+          echo "  failing-step: ${{ steps.failing-step.outcome }}"
+
+  # =========================================================================
+  # JOB 4: DEPLOY - Conditional on branch or force-deploy
+  # =========================================================================
+  #
+  #  This job demonstrates complex conditional logic:
+  #    - Deploy ONLY if on main branch OR force-deploy was set
+  #    - Uses outputs from the analyze job via needs context
+  #
+  deploy:
+    name: "Deploy (conditional)"
+    runs-on: ubuntu-latest
+    needs: [analyze, functions-demo, status-checks]
+
+    # COMPLEX CONDITIONAL:
+    #   Run if: (branch is main) OR (force-deploy input is true)
+    #
+    #   Note: inputs.force-deploy is only set for workflow_dispatch events.
+    #   For push events, it's empty/null, which evaluates to false.
+    #
+    if: |
+      needs.analyze.outputs.is-main == 'true' ||
+      inputs.force-deploy == true
+
+    steps:
+      - name: "Deploy application"
+        run: |
+          echo "============================================="
+          echo "  DEPLOYING APPLICATION"
+          echo "============================================="
+          echo ""
+          echo "  Branch type: ${{ needs.analyze.outputs.branch-type }}"
+          echo "  Is main:     ${{ needs.analyze.outputs.is-main }}"
+          echo "  Force deploy: ${{ inputs.force-deploy }}"
+          echo ""
+
+          if [ "${{ needs.analyze.outputs.is-main }}" = "true" ]; then
+            echo "  Deploying because: push to main branch"
+          else
+            echo "  Deploying because: force-deploy was enabled"
+          fi
+
+          echo ""
+          echo "  [1/3] Building production image..."
+          echo "  [2/3] Pushing to registry..."
+          echo "  [3/3] Rolling out to production..."
+          echo ""
+          echo "  Deployment completed successfully!"
+          echo "============================================="

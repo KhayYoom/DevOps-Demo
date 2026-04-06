@@ -1,0 +1,335 @@
+# =============================================================================
+#  LAB 6: SEQUENTIAL & DEPENDENT JOBS
+# =============================================================================
+#
+#  This workflow demonstrates a FULL CI/CD pipeline with:
+#    - Parallel jobs (lint + test run at the same time)
+#    - Sequential jobs (build waits for lint AND test)
+#    - Artifacts (upload in build, download in deploy)
+#    - Job outputs (pass version number between jobs via GITHUB_OUTPUT)
+#    - The needs context (check results of previous jobs)
+#    - Conditional deployment (production only from main branch)
+#    - Final notification (always runs, reports all job results)
+#
+#  DEPENDENCY GRAPH:
+#
+#    ┌──────┐   ┌──────┐
+#    │ lint │   │ test │    <- These run in PARALLEL
+#    └──┬───┘   └──┬───┘
+#       │          │
+#       └────┬─────┘
+#            ▼
+#        ┌───────┐
+#        │ build │           <- Waits for BOTH lint AND test
+#        └───┬───┘
+#            ▼
+#     ┌────────────┐
+#     │  staging   │         <- Waits for build
+#     └─────┬──────┘
+#           ▼
+#    ┌─────────────┐
+#    │ production  │         <- Waits for staging, ONLY on main
+#    └─────┬──────┘
+#          ▼
+#      ┌────────┐
+#      │ notify │            <- ALWAYS runs, reports all results
+#      └────────┘
+#
+#  HOW TO USE:
+#    Push this file and observe the dependency graph in the Actions tab.
+#    Try failing the lint job to see how it blocks downstream jobs.
+#
+# =============================================================================
+
+name: "Lab 6 - Dependent Jobs Pipeline"
+
+on:
+  push:
+    branches: [main, develop, "feature/**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+
+  # =========================================================================
+  # JOB 1: LINT (runs in parallel with test)
+  # =========================================================================
+  lint:
+    name: "Lint Code"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Run linter"
+        run: |
+          echo "============================================="
+          echo "  LINTING CODE"
+          echo "============================================="
+          echo ""
+          echo "  Checking Python files for syntax errors..."
+          python -m py_compile app/task_manager.py
+          echo "    [OK] app/task_manager.py"
+          python -m py_compile app/api.py
+          echo "    [OK] app/api.py"
+          echo ""
+          echo "  Lint passed!"
+
+  # =========================================================================
+  # JOB 2: TEST (runs in parallel with lint)
+  # =========================================================================
+  #
+  #  NOTE: This job has NO 'needs' keyword, so it starts IMMEDIATELY,
+  #  at the same time as lint. This is PARALLEL execution.
+  #
+  test:
+    name: "Run Tests"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Install dependencies"
+        run: pip install -r requirements.txt
+
+      - name: "Run unit tests"
+        run: |
+          echo "Running unit tests..."
+          python -m pytest tests/unit/ -v --tb=short
+
+      - name: "Run integration tests"
+        run: |
+          echo "Running integration tests..."
+          python -m pytest tests/integration/ -v --tb=short
+
+  # =========================================================================
+  # JOB 3: BUILD (needs BOTH lint AND test)
+  # =========================================================================
+  #
+  #  KEY CONCEPT: needs: [lint, test]
+  #    This job waits for BOTH lint and test to complete successfully.
+  #    If either fails, this job is SKIPPED entirely.
+  #
+  build:
+    name: "Build Artifacts"
+    runs-on: ubuntu-latest
+    needs: [lint, test]
+
+    # JOB OUTPUTS: Make the version available to downstream jobs
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      build-id: ${{ steps.version.outputs.build-id }}
+
+    steps:
+      - name: "Checkout code"
+        uses: actions/checkout@v4
+
+      - name: "Set up Python"
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Generate a version number and build ID
+      # These are passed to downstream jobs via outputs
+      - name: "Generate version"
+        id: version
+        run: |
+          VERSION="1.0.${{ github.run_number }}"
+          BUILD_ID="${{ github.sha }}-$(date +%Y%m%d%H%M%S)"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build-id=$BUILD_ID" >> "$GITHUB_OUTPUT"
+
+          echo "Version: $VERSION"
+          echo "Build ID: $BUILD_ID"
+
+      - name: "Build application"
+        run: |
+          echo "============================================="
+          echo "  BUILDING APPLICATION"
+          echo "============================================="
+          echo ""
+          echo "  Version:  ${{ steps.version.outputs.version }}"
+          echo "  Build ID: ${{ steps.version.outputs.build-id }}"
+          echo ""
+
+          # Create a build artifact (simulated)
+          mkdir -p build
+          cp -r app/ build/app/
+          cp requirements.txt build/
+          echo "${{ steps.version.outputs.version }}" > build/VERSION
+          echo "${{ steps.version.outputs.build-id }}" > build/BUILD_ID
+
+          echo "  Build directory contents:"
+          ls -la build/
+          echo ""
+          echo "  Build completed!"
+
+      # ARTIFACTS: Upload the build output so deploy jobs can download it.
+      #
+      # WHY ARTIFACTS?
+      #   Each job runs on a SEPARATE virtual machine.
+      #   Files from one job are NOT available in another job.
+      #   Artifacts are the way to pass FILES between jobs.
+      #   (Job outputs pass small VALUES like strings.)
+      #
+      - name: "Upload build artifact"
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-build
+          path: build/
+          retention-days: 1
+
+  # =========================================================================
+  # JOB 4: DEPLOY TO STAGING (needs build)
+  # =========================================================================
+  deploy-staging:
+    name: "Deploy to Staging"
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      # ARTIFACTS: Download the build from the build job
+      - name: "Download build artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: app-build
+          path: deploy/
+
+      - name: "Verify artifact contents"
+        run: |
+          echo "Downloaded artifact contents:"
+          ls -la deploy/
+          echo ""
+          echo "Version file:"
+          cat deploy/VERSION
+          echo ""
+          echo "Build ID file:"
+          cat deploy/BUILD_ID
+
+      - name: "Deploy to staging"
+        run: |
+          echo "============================================="
+          echo "  DEPLOYING TO STAGING"
+          echo "============================================="
+          echo ""
+          echo "  Version: ${{ needs.build.outputs.version }}"
+          echo "  Build:   ${{ needs.build.outputs.build-id }}"
+          echo ""
+          echo "  [1/3] Pulling image v${{ needs.build.outputs.version }}..."
+          echo "  [2/3] Updating staging environment..."
+          echo "  [3/3] Running smoke tests..."
+          echo ""
+          echo "  Staging deployment successful!"
+          echo "  URL: https://staging.example.com"
+          echo "============================================="
+
+  # =========================================================================
+  # JOB 5: DEPLOY TO PRODUCTION (needs staging, only on main)
+  # =========================================================================
+  #
+  #  CONDITIONAL DEPLOYMENT:
+  #    This job only runs when:
+  #      1. The staging deployment succeeded (needs: deploy-staging)
+  #      2. The push was to the main branch (if condition)
+  #
+  deploy-production:
+    name: "Deploy to Production"
+    runs-on: ubuntu-latest
+    needs: [build, deploy-staging]
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: "Download build artifact"
+        uses: actions/download-artifact@v4
+        with:
+          name: app-build
+          path: deploy/
+
+      - name: "Deploy to production"
+        run: |
+          echo "============================================="
+          echo "  DEPLOYING TO PRODUCTION"
+          echo "============================================="
+          echo ""
+          echo "  Version: ${{ needs.build.outputs.version }}"
+          echo ""
+          echo "  [1/5] Pulling image v${{ needs.build.outputs.version }}..."
+          echo "  [2/5] Creating backup..."
+          echo "  [3/5] Rolling out to production cluster..."
+          echo "  [4/5] Running health checks..."
+          echo "  [5/5] Enabling monitoring alerts..."
+          echo ""
+          echo "  Production deployment successful!"
+          echo "  URL: https://api.example.com"
+          echo "============================================="
+
+  # =========================================================================
+  # JOB 6: NOTIFY (always runs, shows all results)
+  # =========================================================================
+  #
+  #  KEY CONCEPT: if: always()
+  #    This job runs even if previous jobs failed or were skipped.
+  #    It uses the needs context to check what happened in each job.
+  #
+  #  NEEDS CONTEXT:
+  #    needs.<job_id>.result can be:
+  #      - 'success'   : job completed successfully
+  #      - 'failure'   : job failed
+  #      - 'cancelled' : job was cancelled
+  #      - 'skipped'   : job was skipped (condition was false)
+  #
+  notify:
+    name: "Pipeline Notification"
+    runs-on: ubuntu-latest
+    needs: [lint, test, build, deploy-staging, deploy-production]
+    if: always()
+
+    steps:
+      - name: "Pipeline results summary"
+        run: |
+          echo "============================================="
+          echo "  PIPELINE RESULTS"
+          echo "============================================="
+          echo ""
+          echo "  Lint:             ${{ needs.lint.result }}"
+          echo "  Test:             ${{ needs.test.result }}"
+          echo "  Build:            ${{ needs.build.result }}"
+          echo "  Deploy Staging:   ${{ needs.deploy-staging.result }}"
+          echo "  Deploy Production: ${{ needs.deploy-production.result }}"
+          echo ""
+          echo "  Branch: ${{ github.ref_name }}"
+          echo "  Actor:  ${{ github.actor }}"
+          echo "  Run:    ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo ""
+
+          # Determine overall status
+          if [ "${{ needs.lint.result }}" = "success" ] && \
+             [ "${{ needs.test.result }}" = "success" ] && \
+             [ "${{ needs.build.result }}" = "success" ]; then
+            echo "  Overall: PIPELINE PASSED"
+          else
+            echo "  Overall: PIPELINE FAILED"
+          fi
+
+          echo ""
+          echo "============================================="
+
+      - name: "Show needs context (for learning)"
+        run: |
+          echo "Full needs context (toJSON):"
+          echo ""
+          echo "This shows ALL data available from upstream jobs:"
+          echo '  ${{ toJSON(needs) }}'

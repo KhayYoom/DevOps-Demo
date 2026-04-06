@@ -1,0 +1,186 @@
+# =============================================================================
+#  LAB 4: MANUAL & EXTERNAL TRIGGERS
+# =============================================================================
+#
+#  This workflow demonstrates workflow_dispatch -- manual triggers
+#  with typed inputs that you can fill in from the GitHub UI or CLI.
+#
+#  KEY CONCEPTS:
+#    - workflow_dispatch creates a "Run workflow" button on GitHub
+#    - Inputs can be: string, boolean, choice, number, environment
+#    - You can have up to 10 inputs per workflow_dispatch
+#    - Inputs are accessed via ${{ inputs.<name> }} or ${{ github.event.inputs.<name> }}
+#
+#  HOW TO TRIGGER:
+#    1. GitHub UI:  Actions tab > select this workflow > "Run workflow"
+#    2. GitHub CLI: gh workflow run lab4-manual-triggers.yml -f environment=staging
+#    3. REST API:   POST /repos/{owner}/{repo}/actions/workflows/{id}/dispatches
+#
+# =============================================================================
+
+name: "Lab 4 - Manual Triggers (workflow_dispatch)"
+
+# ---------------------------------------------------------------------------
+# TRIGGER: Only runs when manually triggered
+# ---------------------------------------------------------------------------
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target deployment environment"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+
+      version:
+        description: "Version to deploy (format: X.Y.Z)"
+        required: true
+        default: "1.0.0"
+        type: string
+
+      dry-run:
+        description: "Simulate deployment without making changes"
+        required: false
+        default: false
+        type: boolean
+
+      notify:
+        description: "Send notification after deployment"
+        required: false
+        default: true
+        type: boolean
+
+# ---------------------------------------------------------------------------
+# JOBS
+# ---------------------------------------------------------------------------
+jobs:
+
+  # =========================================================================
+  # JOB 1: Print the deployment plan
+  # =========================================================================
+  deployment-plan:
+    name: "Deployment Plan"
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Show what was requested
+      - name: "Print deployment plan"
+        run: |
+          echo "============================================="
+          echo "  DEPLOYMENT PLAN"
+          echo "============================================="
+          echo ""
+          echo "  Environment:  ${{ inputs.environment }}"
+          echo "  Version:      ${{ inputs.version }}"
+          echo "  Dry Run:      ${{ inputs.dry-run }}"
+          echo "  Notify:       ${{ inputs.notify }}"
+          echo "  Triggered by: ${{ github.actor }}"
+          echo "  Branch:       ${{ github.ref_name }}"
+          echo ""
+          echo "============================================="
+
+      # Step 2: Validate the version format (must be X.Y.Z)
+      #
+      # WHY THIS MATTERS:
+      #   In real pipelines, you validate inputs BEFORE doing expensive work.
+      #   A bad version string could break deployments or tagging.
+      #
+      - name: "Validate version format"
+        run: |
+          VERSION="${{ inputs.version }}"
+          echo "Validating version: $VERSION"
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo ""
+            echo "ERROR: Invalid version format!"
+            echo "Expected: X.Y.Z (e.g., 1.0.0, 2.3.1)"
+            echo "Got:      $VERSION"
+            echo ""
+            echo "Hint: Version must be three numbers separated by dots."
+            exit 1
+          fi
+
+          echo "Version format is valid: $VERSION"
+
+      # Step 3: Simulate the deployment
+      #
+      # CONDITIONAL: If dry-run is true, just print what WOULD happen.
+      #              If dry-run is false, do the actual (simulated) deployment.
+      #
+      - name: "Simulate deployment"
+        run: |
+          echo "Deploying version ${{ inputs.version }} to ${{ inputs.environment }}..."
+
+          if [ "${{ inputs.dry-run }}" = "true" ]; then
+            echo ""
+            echo "[DRY RUN] The following actions WOULD be performed:"
+            echo "  1. Build Docker image v${{ inputs.version }}"
+            echo "  2. Push to ${{ inputs.environment }} registry"
+            echo "  3. Update ${{ inputs.environment }} cluster"
+            echo "  4. Run smoke tests"
+            echo ""
+            echo "[DRY RUN] No changes were made."
+          else
+            echo ""
+            echo "Performing deployment..."
+            echo "  [1/4] Building Docker image v${{ inputs.version }}..."
+            sleep 1
+            echo "  [2/4] Pushing to ${{ inputs.environment }} registry..."
+            sleep 1
+            echo "  [3/4] Updating ${{ inputs.environment }} cluster..."
+            sleep 1
+            echo "  [4/4] Running smoke tests..."
+            sleep 1
+            echo ""
+            echo "Deployment to ${{ inputs.environment }} completed successfully!"
+          fi
+
+      # Step 4: Production safety check
+      #
+      # CONDITIONAL: Only runs when deploying to production AND not a dry run.
+      # This shows how to combine multiple conditions with && (AND).
+      #
+      - name: "Production safety check"
+        if: inputs.environment == 'prod' && inputs.dry-run == false
+        run: |
+          echo "============================================="
+          echo "  PRODUCTION DEPLOYMENT DETECTED!"
+          echo "============================================="
+          echo ""
+          echo "  Extra safety checks for production:"
+          echo "    [OK] Version ${{ inputs.version }} passed staging tests"
+          echo "    [OK] No breaking changes detected"
+          echo "    [OK] Rollback plan verified"
+          echo "    [OK] On-call team notified"
+          echo ""
+          echo "  Production deployment approved."
+          echo "============================================="
+
+      # Step 5: Notification
+      #
+      # CONDITIONAL: Only runs if the 'notify' input is true.
+      #
+      - name: "Send notification"
+        if: inputs.notify == true
+        run: |
+          echo "Sending deployment notification..."
+          echo ""
+          echo "  To:      #deployments channel"
+          echo "  Message:  v${{ inputs.version }} deployed to ${{ inputs.environment }}"
+          echo "  Status:   SUCCESS"
+          echo "  Actor:    ${{ github.actor }}"
+          echo ""
+          echo "In a real workflow, this would use:"
+          echo "  - Slack action (slackapi/slack-github-action)"
+          echo "  - Microsoft Teams webhook"
+          echo "  - Email via SendGrid"
+          echo "  - PagerDuty alert"
+
+      - name: "Skip notification"
+        if: inputs.notify == false
+        run: |
+          echo "Notification skipped (notify input was set to false)."
