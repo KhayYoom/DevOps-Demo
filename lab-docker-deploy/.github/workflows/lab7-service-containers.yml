@@ -1,0 +1,142 @@
+# =============================================================================
+#  Lab 7: Service Containers - Postgres & Redis for Integration Testing
+# =============================================================================
+#
+#  This workflow demonstrates how GitHub Actions can spin up SERVICE CONTAINERS
+#  (Postgres, Redis) alongside your job so that integration tests can connect
+#  to real databases instead of mocks.
+#
+#  KEY CONCEPTS:
+#    - Service containers run in Docker on the SAME network as your job
+#    - Health checks ensure services are ready BEFORE your steps execute
+#    - Service containers only work on Linux runners (ubuntu-latest)
+#    - You access services via localhost:{port} when running on the VM
+#
+# =============================================================================
+
+name: "Lab 7 - Service Containers"
+
+on:
+  push:
+    paths:
+      - "03-cicd/lab-docker-deploy/app/**"
+      - "03-cicd/lab-docker-deploy/tests/**"
+  workflow_dispatch:   # Manual trigger for lab experimentation
+
+defaults:
+  run:
+    working-directory: 03-cicd/lab-docker-deploy
+
+jobs:
+  # =========================================================================
+  #  Job 1: integration-tests  (with Postgres + Redis service containers)
+  # =========================================================================
+  integration-tests:
+    name: "Integration Tests (Postgres + Redis)"
+    runs-on: ubuntu-latest    # Service containers REQUIRE Linux runners
+
+    # ----- SERVICE CONTAINERS -----
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: inventory_test
+        ports:
+          - 5432:5432
+        # Health check: wait until Postgres is ready to accept connections
+        options: >-
+          --health-cmd "pg_isready -U testuser"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        # Health check: wait until Redis responds to PING
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Wait for services to be ready
+        run: |
+          echo "Checking Postgres..."
+          for i in {1..10}; do
+            pg_isready -h localhost -p 5432 -U testuser && break
+            echo "  Waiting for Postgres... (attempt $i)"
+            sleep 2
+          done
+
+          echo "Checking Redis..."
+          for i in {1..10}; do
+            redis-cli -h localhost -p 6379 ping && break
+            echo "  Waiting for Redis... (attempt $i)"
+            sleep 2
+          done
+
+      - name: Run unit tests (no services needed)
+        run: python -m pytest tests/unit/ -v --tb=short
+
+      - name: Run integration tests (with real Postgres & Redis)
+        env:
+          DATABASE_URL: postgresql://testuser:testpass@localhost:5432/inventory_test
+          REDIS_URL: redis://localhost:6379
+        run: python -m pytest tests/integration/ -v --tb=short
+
+      - name: Verify Redis connection manually
+        run: |
+          echo "Setting a test key in Redis..."
+          redis-cli -h localhost -p 6379 SET ci_test "hello from GitHub Actions"
+          VALUE=$(redis-cli -h localhost -p 6379 GET ci_test)
+          echo "Got value: $VALUE"
+          if [ "$VALUE" = "hello from GitHub Actions" ]; then
+            echo "Redis verification PASSED"
+          else
+            echo "Redis verification FAILED"
+            exit 1
+          fi
+
+  # =========================================================================
+  #  Job 2: unit-tests-only  (NO service containers needed)
+  # =========================================================================
+  unit-tests-only:
+    name: "Unit Tests Only (no services)"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: python -m pytest tests/unit/ -v --tb=short
+
+      - name: Summary
+        run: |
+          echo "## Unit Tests Results" >> $GITHUB_STEP_SUMMARY
+          echo "Unit tests passed WITHOUT any service containers." >> $GITHUB_STEP_SUMMARY
+          echo "This proves the business logic is independent of the database." >> $GITHUB_STEP_SUMMARY

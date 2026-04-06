@@ -1,0 +1,40 @@
+# =============================================================================
+#  docker-compose.yml - Local development environment
+# =============================================================================
+#
+#  Start everything:  docker-compose up --build
+#  Stop everything:   docker-compose down
+#  View logs:         docker-compose logs -f app
+#
+#  This brings up:
+#    - The Inventory API (port 8080)
+#    - PostgreSQL 16    (port 5432)
+#    - Redis 7          (port 6379)
+#
+# =============================================================================
+
+services:
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      DATABASE_URL: postgresql://devuser:devpass@postgres:5432/inventory
+      REDIS_URL: redis://redis:6379
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: devuser
+      POSTGRES_PASSWORD: devpass
+      POSTGRES_DB: inventory
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"

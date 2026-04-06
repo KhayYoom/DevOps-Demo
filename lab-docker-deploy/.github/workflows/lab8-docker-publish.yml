@@ -1,0 +1,167 @@
+# =============================================================================
+#  Lab 8: Docker Build & Publish to GitHub Container Registry (GHCR)
+# =============================================================================
+#
+#  This workflow builds a Docker image for the Inventory API and pushes
+#  it to GHCR (ghcr.io).
+#
+#  KEY CONCEPTS:
+#    - GITHUB_TOKEN is automatically available -- no secrets to configure
+#    - docker/metadata-action generates smart tags (sha, branch, semver)
+#    - docker/build-push-action handles multi-platform builds
+#    - A verify job pulls the published image and tests it
+#
+# =============================================================================
+
+name: "Lab 8 - Docker Build & Publish"
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "03-cicd/lab-docker-deploy/**"
+    tags:
+      - "v*"            # Trigger on version tags like v1.0.0
+  workflow_dispatch:     # Manual trigger for lab experimentation
+
+defaults:
+  run:
+    working-directory: 03-cicd/lab-docker-deploy
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/inventory-api
+
+jobs:
+  # =========================================================================
+  #  Job 1: test  (run unit tests before building)
+  # =========================================================================
+  test:
+    name: "Run Unit Tests"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: python -m pytest tests/unit/ -v --tb=short
+
+  # =========================================================================
+  #  Job 2: build-and-push  (build Docker image, push to GHCR)
+  # =========================================================================
+  build-and-push:
+    name: "Build & Push Docker Image"
+    runs-on: ubuntu-latest
+    needs: test     # Only build if tests pass
+
+    permissions:
+      contents: read
+      packages: write    # Required to push to GHCR
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata (tags & labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # Tag with "latest" on default branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            # Tag with short git SHA
+            type=sha,prefix=
+            # Tag with branch name
+            type=ref,event=branch
+            # Tag with semver from git tag (v1.2.3 -> 1.2.3, 1.2)
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: 03-cicd/lab-docker-deploy
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Print image summary
+        run: |
+          echo "## Docker Image Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Registry:** ${{ env.REGISTRY }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Image:** ${{ env.IMAGE_NAME }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Tags:**" >> $GITHUB_STEP_SUMMARY
+          echo '${{ steps.meta.outputs.tags }}' | tr ',' '\n' | while read tag; do
+            echo "- \`$tag\`" >> $GITHUB_STEP_SUMMARY
+          done
+
+  # =========================================================================
+  #  Job 3: verify  (pull the image and test it)
+  # =========================================================================
+  verify:
+    name: "Verify Published Image"
+    runs-on: ubuntu-latest
+    needs: build-and-push
+
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull the published image
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "Pulling $IMAGE ..."
+          docker pull "$IMAGE"
+        working-directory: .
+
+      - name: Run container and test health endpoint
+        run: |
+          IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          echo "Starting container..."
+          CONTAINER_ID=$(docker run -d -p 8080:8080 "$IMAGE")
+
+          echo "Waiting for container to start..."
+          sleep 5
+
+          echo "Testing /health endpoint..."
+          RESPONSE=$(curl -s http://localhost:8080/health)
+          echo "Response: $RESPONSE"
+
+          # Check that the response contains "healthy"
+          if echo "$RESPONSE" | grep -q "healthy"; then
+            echo "Health check PASSED"
+          else
+            echo "Health check FAILED"
+            docker logs "$CONTAINER_ID"
+            docker stop "$CONTAINER_ID"
+            exit 1
+          fi
+
+          echo "Cleaning up..."
+          docker stop "$CONTAINER_ID"
+          docker rm "$CONTAINER_ID"
+          echo "Verification complete!"
+        working-directory: .
